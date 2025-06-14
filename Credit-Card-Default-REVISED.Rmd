@@ -1,0 +1,378 @@
+---
+title: "Logistic Regression and Random Forest to Determine Credit Card Default"
+date: "June 13, 2025"
+output: html_document
+author: "Travis Gubbe"
+---
+
+In this session, I examine the Credit Card Clients data set found on the UCI Machine Learning Repository website to determine if a person will default on their credit card using logistic regression and random forest. 
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(MASS)
+library(caret)
+library(neuralnet)
+library(randomForest)
+library(pander)
+library(dplyr)
+library(ggplot2)
+library(glmnet)
+library(ROSE)
+library(Metrics)
+library(car)
+library(pROC)
+library(OptimalCutpoints)
+```
+
+## About the Data Set
+
+The data set can be found on the UCI Machine Learning Repository site at the following link: <https://archive.ics.uci.edu/ml/datasets/default+of+credit+card+clients>.
+
+The data contains 24 variables and a total of 30,000 individual instances. The variables are:
+
+* Default Payment (0 = No, 1 = Yes)
+* Amount of Given Credit
+* Gender (1 = Male, 2 = Female)
+* Education (1 = Graduate School, 2 = University, 3 = High School, 4 = Other, 5 = Unknown)
+* Marital Status (1 = Married, 2 = Single, 3 = Others)
+* Age
+* History of Past Payment from April 2005 to September 2005 where -2=no consumption, -1=pay duly, 0=the use of revolving credit, 1=payment delay for one month, 2=payment delay for two months, … 9=payment delay for nine months and above
+* Amount of Bill Statement from April 2005 to September 2005 
+* Amount of Previous Payment April 2005 to September 2005
+
+There is a separate variable for each past payment, bill statement, and previous payment from April to September.
+
+## Exploratory Analysis
+
+First, the data set is loaded into a data frame named "credit". The data frame is also viewed to see the columns and class types.
+
+```{r exploratory}
+data <- read.csv("~/R datasets/Credit_Card.csv")
+credit = subset(data, select = c("Limit_Bal", "Sex", "Education", "Marriage", "Age", "Pay_Sep",
+                                 "Pay_Aug", "Pay_July", "Pay_June", "Pay_May", "Pay_April",
+                                 "Bill_Amt_Sep", "Bill_Amt_Aug", "Bill_Amt_July",
+                                 "Bill_Amt_June", "Bill_Amt_May", "Bill_Amt_April",
+                                 "Pay_Amt_Sep", "Pay_Amt_Aug", "Pay_Amt_July","Pay_Amt_June",
+                                 "Pay_Amt_May", "Pay_Amt_April", "Default"))
+#Inspect the data frame
+head(credit)
+#Inspect the classes of the data frame
+sapply(credit, class)
+
+attach(credit)
+```
+
+Next, I want to see the amount of missing values and duplicates in the data frame.
+
+```{r cleaning}
+sum(is.na(credit))
+
+duplicates <- credit%>%duplicated()
+duplicates_amount <- duplicates%>%(table)
+duplicates_amount
+```
+
+Since there are 35 duplicates in the data, the data frame is filtered to remove the duplicates.
+
+```{r distinct_values}
+credit <- credit%>%distinct()
+#Displays how many duplicates are present in the updated data frame.
+duplicates_counts_unique <- credit%>%duplicated()%>%table()
+duplicates_counts_unique
+```
+
+Next, the factor variables are converted from their numeric values to their actual names. This is done on a copy of the credit data frame. 
+
+```{r copy_df}
+credit1 <- data.frame(credit)
+head(credit1)
+```
+
+```{r rename_variables}
+#Rename factor variables to their appropriate settings
+credit1$Sex[credit$Sex %in% "1"] = "Male"
+credit1$Sex[credit$Sex %in% "2"] = "Female"
+
+credit1$Education[credit$Education %in% "1"] = "Grad School"
+credit1$Education[credit$Education %in% "2"] = "College"
+credit1$Education[credit$Education %in% "3"] = "High School"
+credit1$Education[credit$Education %in% "4"] = "Other"
+credit1$Education[credit$Education %in% "5"] = "Unknown"
+
+credit1$Marriage[credit$Marriage %in% "0"] = "Unknown"
+credit1$Marriage[credit$Marriage %in% "1"] = "Married"
+credit1$Marriage[credit$Marriage %in% "2"] = "Single"
+credit1$Marriage[credit$Marriage %in% "3"] = "Other"
+
+credit1$Default[credit$Default %in% "0"] = "No"
+credit1$Default[credit$Default %in% "1"] = "Yes"
+#See the change in the variable names
+head(credit1)
+```
+
+Next, exploratory tables are made to view the distribution of the data set. 
+
+### Data Distribution
+
+Next, bar plots and distribution tables are created to see the proportion of the variables. This is done to see if the data is normally distributed. If the data is not normally distributed, it's advantageous to see how the data is skewed.
+
+```{r exploratory_tables}
+#View the bar plots for the amount for each categorical variable
+counts_Sex <- table(credit1$Sex)
+barplot(counts_Sex, col = c("royalblue", "darkorange1"))
+#Basic table view of the amount of males and females
+table(credit1$Sex)
+#Proportion of each gender in table
+prop.table(counts_Sex)
+
+counts_Education <- table(credit1$Education)
+barplot(counts_Education, col = c("brown4", "green3", "mediumpurple2", "slategray3",
+                                  "darkgoldenrod2"))
+table(credit1$Education)
+#Proportion of each education level in table
+prop.table(counts_Education)
+
+counts_Marriage <- table(credit1$Marriage)
+barplot(counts_Marriage, col = c("magenta2", "Cyan3", "goldenrod"))
+table(credit$Marriage)
+#Proportion of each marriage status in table
+prop.table(counts_Marriage)
+
+counts_Default <- table(credit1$Default)
+barplot(counts_Default, col = c("turquoise2", "sienna1"))
+table(credit$Default)
+prop.table(counts_Default)
+
+table.default_gender <- table(credit1$Default, credit$Sex)
+prop.table(table.default_gender, 2)
+prop.table(table.default_gender, 1)
+barplot(table.default_gender, col = c("sienna1", "royalblue"), beside = T,
+        names.arg = c("Female", "Male"))
+legend("topright", legend = c("No", "Yes"), fill = c("sienna1", "royalblue"))
+
+ggplot(data = credit, aes(x = Age)) + geom_histogram(fill = "Blue", col = "Grey", bins = 30)
+
+ggplot(data = credit, aes(x = Age)) + geom_histogram(aes(y = ..density..), fill = "Blue", col = "Grey", binwidth = 5)+geom_density(alpha = 0.2, color = "black", fill = "blue")
+mean(credit1$Age)
+```
+
+Looking at the created charts and tables, the data has more females than males. In addition, the age distribution is skewed to the right, meaning the data is represented by younger participants. As such, it may be easier to predict credit card default for females or for younger participants compared to males or older participants. 
+
+### Scaling the Data
+
+
+Before setting up the prediction model, all variables except for Default (the variable we are trying to predict) are scaled so the data is standardized.
+
+```{r scale_variables}
+credit = credit %>%
+  mutate(across(1:23, scale))
+
+```
+
+
+### Train and Test Sets
+
+Before creating prediction models, training and testing data sets are created. A training data set is a subset of examples used to train the model, while the testing data set is a subset used to test the training model.
+
+```{r test_set_credit}
+#Initializes number generator.
+set.seed(123)
+#New sample created for the training and testing data sets. The data is split with 75% in training and 25% in testing.
+sample <- sample(c(TRUE, FALSE), nrow(credit1), replace = TRUE, prob = c(0.75, 0.25))
+train_set <- credit[sample, ]
+test_set <- credit[!sample, ]
+```
+
+
+### Sampling the Data
+From the bar plots, it is clear there is an imbalance between those who default and those who did not in the data. This could cause issues in creating a prediction model, which would most likely skew towards predicting much more "No" answers since there are more within the sampled data. To solve this issue, oversampling and undersampling the training set data can be done. Oversampling duplicates random samples from the minority class, while undersampling randomly reduces samples from the majority class. Doing both helps to "even out" the bias and possibly improve the model's overall performance.
+
+The random oversampling and undersampling is performed below:
+
+```{r over_sampling}
+credit_balance_train <- ovun.sample(Default ~., data = train_set, method = "over")$data
+#credit_balance_train <- ovun.sample(Default ~., data = train_set, N = nrow(train_set), seed = 1, method = "both")$data
+
+#credit_balance <- ovun.sample(Default ~., data = credit1, N = nrow(credit1),
+#                              p = 0.5, seed = 1, method = "both")$data
+```
+
+Now that the training and testing data sets are created and have been randomly sampled, prediction analysis methods such as logistic regression and random forest can be completed.
+
+## Logistic Regression
+
+First, logistic regression is done to find the probability of default for an individual. Logistic regression models the probability that a response variable (Y) belongs to a particular category. This method uses maximum likelihood to fit the model in the range between 0 and 1. 
+
+Logistic regression is a classification method great for a yes/no response. A number closer to 1 represents "Yes", while a number closer to 0 represents "No".
+
+A logistic regression model is created below, which is then used to predict the probabilities of credit card default for three individuals:
+
+```{r logistic_regression, warning= FALSE}
+# With Training Set
+#fit_glm <- glm(Default ~ ., data = credit_balance_train, family = binomial())
+#Displays summary of the logistic regression model. Use step AIC to narrow logistic model based on statistically significant variables. Lots of statistically insignificant variables that can be removed from the model.
+#summary(fit_glm)
+#stepAIC(fit_glm)
+
+#Next logistic regression model, removing variables based on AIC and statistical significance.
+fit_glm2 <- glm(Default ~Limit_Bal+Sex+Education+Marriage+Age+Pay_Sep+Pay_Aug+
+                  Pay_July+Bill_Amt_Sep+Bill_Amt_July+Pay_Amt_Sep+Pay_Amt_Aug+
+                  Pay_Amt_June+Pay_Amt_May+Pay_Amt_April,
+                  data = credit_balance_train, family = binomial())
+
+summary(fit_glm2)
+
+#Third attempt at logistic regression model
+fit_glm3 <- glm(Default ~Limit_Bal+Sex+Education+Marriage+Age+Pay_Sep+Pay_Aug+
+                  Pay_July+Bill_Amt_Sep+Bill_Amt_July+Pay_Amt_Sep+Pay_Amt_Aug+
+                  Pay_Amt_June, data = credit_balance_train, family = binomial())
+
+summary(fit_glm3)
+stepAIC(fit_glm3)
+#VIF of the 3rd logistic regression model. VIF scores for Bill_Amt_Sep and Bill_Amt_July are a little high.
+vif(fit_glm3)
+
+fit_glm4 <- glm(Default ~Limit_Bal+Education+Marriage+Age+Pay_Sep+Pay_Aug+
+                Pay_July+Pay_Amt_Sep+Pay_Amt_Aug+Pay_Amt_June, 
+                data = credit_balance_train, family = binomial())
+
+summary(fit_glm4)
+stepAIC(fit_glm4)
+#VIF Values are much better. 
+vif(fit_glm4)
+#Fit_glm4 seems to be the best model.
+```
+
+
+
+
+```{r predictions, warning=FALSE}
+pred_probs <- predict.glm(fit_glm4, newdata = test_set, type = "response")
+#Displays the predictions for a few values. 
+head(pred_probs)
+#Sorts predictions into their respective class (0 or 1) depending on their value.
+pred <- ifelse(pred_probs<0.5, 0,1)
+#Creates and displays the confusion matrix table based on the actual and predicted values.
+confusion_table <- table(test_set$Default, pred)
+confusion_table
+#Creates the confusion matrix statistics for the logistic regression model.
+cm_log <- confusionMatrix(confusion_table, positive = '1', mode = "everything")
+#Saves the accuracy, precision, and recall values.
+log_accuracy = accuracy(test_set$Default, pred)
+log_precision = cm_log$byClass['Precision']
+log_recall = cm_log$byClass['Recall']
+log_pos_precision = cm_log$byClass['Neg Pred Value']
+#Prints the accuracy, precision, and recall values.
+print(paste("Accuracy: ", round(log_accuracy,3)))
+print(paste("Precision: ", round(log_precision,3)))
+print(paste("Recall: ", round(log_recall,3)))
+print(paste("Default Precision: ", round(log_pos_precision,3)))
+```
+Once the model was run, the accuracy, precision, and recall were found for the prediction model. Accuracy describes how often the model is correct in its overall prediction. Precision identifies how often the model identifies those who default on their credit card out of all who do so, while recall identifies how often the model correctly identifies those who default on their credit card.Another way of describing precision and recall is precision is a measure of quality, while recall is a measure of quantity.
+
+In the case of the logistic regression model, the accuracy was 70.3%, precision was 62.8%, and recall was 39%. The precision for predicting actual default cases correctly was 72.4%. Overall, the logistic regression model was fairly decent at its predicting whether a client would default.
+
+The regression model's accuracy, specificity, and sensitivity can be improved by optimizing the cutoff point for the model. One way of doing so is using the Receiver Operating Characteristic (ROC) curve, which plots the true positive (sensitivity) against the false positive rate against various thresholds. The AUC curve can be used to measure the performance of the model, with a higher AUC number demonstrating better model performance. An AUC 0.8 and above indicates good model performance. The model has an AUC score of 0.721, which indicates acceptable model performance. This will be a factor to keep in mind for potential model improvements. 
+
+```{r opt_cuts, warning=FALSE}
+prob <- predict(fit_glm4, type = "response")
+# Create ROC curve
+roc_obj <- roc(credit_balance_train$Default, prob, plot = TRUE, col = "blue", print.auc = TRUE)
+
+# Find optimal cutoff (maximizes sensitivity + specificity)
+#AUC performance = 0.72
+
+#Plot ROC curve with AUC value
+plot(roc_obj, col = "blue", print.auc = TRUE, main = "ROC Curve for Capsule Prediction")
+opt <- coords(roc_obj, "best", ret = c("threshold", "sensitivity", "specificity"))
+print(opt)
+#threshold = 0.566
+#sensitivity = 0.496
+#specificity = 0.875
+```
+
+The ROC curve supplies various cutoff values for the logistic regression model. From the ROC curve, the optimal cutoff point to maximize all three measurements (accuracy, specificity, and sensitvity) is 0.566, while the cutoffs to maximize sensitivity and specificity are 0.496 and 0.875, respectively. The optimal cutoff from the AUC curve, which maximizes both sensitivity and specificity, is 0.72. There is a tradeoff for each cutoff point, so it is up to the user to determine which is best for the purpose of the model. I chose to use 0.566 since I want to maximize both the overall accuracy of the model while accurately identifying those who will default on their credit card. 
+
+```{r cutoff_preds, warning=FALSE}
+pred_new <- ifelse(pred_probs<0.566, 0,1)
+#Creates and displays the confusion matrix table based on the actual and predicted values.
+confusion_table_new <- table(test_set$Default, pred_new)
+confusion_table_new
+#Creates the confusion matrix statistics for the logistic regression model.
+cm_log_opt <- confusionMatrix(confusion_table_new, positive = '1', mode = "everything")
+#Saves the accuracy, precision, and recall values.
+log_accuracy_opt = accuracy(test_set$Default, pred_new)
+log_precision_opt = cm_log_opt$byClass['Precision']
+log_recall_opt = cm_log_opt$byClass['Recall']
+log_pos_precision_opt = cm_log_opt$byClass['Neg Pred Value']
+#Prints the accuracy, precision, and recall values.
+print(paste("Accuracy: ", round(log_accuracy_opt,3)))
+print(paste("Precision: ", round(log_precision_opt,3)))
+print(paste("Recall: ", round(log_recall_opt,3)))
+print(paste("Default Precision: ", round(log_pos_precision_opt,3)))
+```
+
+## Random Forest
+
+Another prediction model used is random forest. Random forest is a classifying method consisting of many decision trees. By creating a "forest" of decision trees, the classifying model hopes to select it's best model by running many different decision trees and "takes the majority" to determine classification. To do so, random forest uses out-of-bag sampling.
+
+A random forest model is created to determine the probability of credit card default:
+
+```{r forest_normal}
+set.seed(123)
+#Random Forest for variables. mtry = 3 since there are 10 variables (square root of 10 is close to 4).
+fit_rf <- randomForest(factor(Default) ~Limit_Bal+Education+Marriage+Age+Pay_Sep+Pay_Aug+
+                  Pay_July+Pay_Amt_Sep+Pay_Amt_Aug+Pay_Amt_June, 
+                  mtry = 3, data = credit_balance_train)
+varImpPlot(fit_rf)
+#Predicts values in the test set.
+predict_rf <- predict(fit_rf, test_set)
+#Creates the confusion matrix table for the random forest model.
+confusion_table_rf <- table(test_set$Default, predict_rf)
+#Creates and displays the confusion matrix statistics for the random forest model.
+cm_rf <- confusionMatrix(confusion_table_rf, positive = '1', mode = "everything")
+cm_rf
+#Saves the accuracy, precision, and recall values.
+rf_accuracy = accuracy(test_set$Default, predict_rf)
+rf_precision = cm_rf$byClass['Precision']
+rf_recall = cm_rf$byClass['Recall']
+rf_pos_precision = cm_rf$byClass['Pos Pred Value']
+#Prints the accuracy, total precision, recall, and default precision values.
+print(paste("Accuracy: ", round(rf_accuracy,3)))
+print(paste("Precision: ", round(rf_precision,3)))
+print(paste("Recall: ", round(rf_recall,3)))
+print(paste("Default Precision: ", round(rf_pos_precision,3)))
+```
+
+From the input printed and the plot provided, it is seen that the pay amount and bill amount in September, as well as limit balance are important variables in determining credit card default. It can also be argued age, bill amount in August and bill amount in July are important variables in determining credit card default. 
+
+Looking at the confusion matrix, the random forest model's accuracy was 81.1%, precision was 44.6%, and recall was 59.0%. The precision for predicting actual default cases correctly was 44.6%. Overall, the random forest model was slightly better in its accuracy and recall. However, the logistic regression model performed better than the random forest model when predicting actual default cases. 
+
+## Conclusion
+
+In this project, logistic regression and random forest models were created to predict if an individual would default on their credit card.
+
+First, the data was cleaned for accuracy and manipulated to view distributions and trends in the data. From the tables and plots created, the data had more females than males and was skewed in age, with participants below the age of 40 much more prevalent than participants over the age of 40.
+
+Next, prediction models were created to predict an individual's chances of defaulting on their credit card. The first model used was a logistic regression model. This model was used to predict if an individual would default on their credit card based on their information. This model is great for predicting a Yes/No classification for individuals. From the model created, three individuals were created with their unique information. In the example above, all three individuals created had a good chance of not defaulting on their credit card.
+
+A random forest model was also created to determine the most important variables in a prediction model, as well as to see the accuracy of the created model. From the results, the random forest model could accurately predict someone not defaulting on their credit card, but had a more difficult time accurately predicting when someone would default on their credit card.
+
+When comparing the two models, the following table was created:
+
+```{r pander}
+set.caption("Performance for Logistic Regression and Random Forest Models")
+data.table = rbind(c(log_accuracy_opt, log_precision_opt, log_recall_opt, log_pos_precision_opt), c(rf_accuracy, rf_precision, rf_recall, rf_pos_precision))
+colnames(data.table) = c("Accuracy", "Precision", "Recall", "Default Precision")
+rownames(data.table) = c("Logistic Regression", "Random Forest")
+
+pander(data.table)
+```
+
+Overall, it seems the logistic regression model has a higher precision and default precision rate than the random forest model, but does worse than the random forest model in accuracy and recall. This means the logistic regression model has less false positives than the random forest model, but also has more false negatives. Though the accuracy seems fairly high for the random forest prediction model, I am concerned with the false positive and false negative rates and the low default precision percentage.
+
+Though these prediction models are acceptable, there is room for improvement, particularly in accurately predicting client that will default. I believe adding certain variables such as credit score, credit age, and credit card utilization can help improve the prediction models. 
+
+Thank you for viewing my project.
+
+# END
